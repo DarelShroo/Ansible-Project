@@ -1,0 +1,186 @@
+---
+- hosts: all
+  remote_user: host
+  become: yes
+  gather_facts: yes
+  vars:
+    shield: /home/host/shield
+    env_vars: 
+      SHIELD_DIR: "{{ shield }}"
+  environment: "{{ env_vars }}"
+  tasks:
+    - name: update  and upgrade package
+      apt:
+        cache_valid_time: 3600 
+        update_cache: yes
+        upgrade: dist
+      
+    - name: install necessary packages
+      apt:
+        name: 
+          - python3
+          - git
+          - nginx
+          - python3-pip
+          - python3-venv
+          - python-setuptools
+        state: latest
+        install_recommends: yes
+
+    - name: copy git
+      git:
+        repo: 'https://github.com/DarelShroo/shield.git'
+        dest: /$SHIELD_DIR
+        clone: yes
+
+    - name: Create venv folder
+      file:
+        name: /$SHIELD_DIR/venv
+        state: directory
+        recurse: yes
+
+    - name: Install virtualenv module
+      pip:
+        name: virtualenv
+        state: latest
+        executable: /usr/bin/pip3
+
+    - name: create virtualenv 
+      pip:   
+        name: bottle
+        state: latest 
+        virtualenv: /$SHIELD_DIR/venv
+        virtualenv_site_packages: yes
+
+    - name: install package inside virtualenv
+      pip:
+        virtualenv: /$SHIELD_DIR/venv
+        virtualenv_python: python3
+        name: wheel
+
+    - name: install requirements
+      pip:
+        virtualenv: /$SHIELD_DIR/venv
+        virtualenv_python: python3
+        requirements: /$SHIELD_DIR/requirements.txt
+
+    - name: Django makemigrations
+      django_manage:
+        virtualenv: /$SHIELD_DIR/venv
+        app_path: /$SHIELD_DIR
+        command: makemigrations
+
+    - name: Django migrate
+      django_manage:
+        virtualenv: /$SHIELD_DIR/venv
+        app_path: /$SHIELD_DIR
+        command: migrate
+
+    - name: Django loaddata
+      django_manage:
+        virtualenv: /$SHIELD_DIR/venv
+        app_path: /$SHIELD_DIR
+        command: loaddata
+        fixtures: /$SHIELD_DIR/metahumans/dumpdata.json
+    
+    - name: recoleccion assets, estáticos
+      lineinfile:
+        path: /$SHIELD_DIR/shield/settings.py
+        line: STATIC_ROOT = os.path.join(BASE_DIR, 'static')
+
+    - name: Django collectstatic
+      django_manage:
+        virtualenv: /$SHIELD_DIR/venv
+        app_path: /$SHIELD_DIR
+        command: collectstatic
+
+    - name: Move $SHIELD_DIR to /var/www
+      copy: remote_src=True src=$SHIELD_DIR dest=/var/www
+      
+    - name: change value variable
+      set_fact: shield=/var/www/shield
+      
+    - name: debug variable  
+      debug: msg="{{ shield }}"
+
+    - name: change permissions
+      file:
+        path: $SHIELD_DIR
+        group: www-data
+        owner: www-data
+
+    - name: install uwsgi
+      pip:
+        name: uwsgi
+        state: latest
+        executable: /usr/bin/pip3
+
+    - name: create folder vassals
+      file:
+        name: /etc/uwsgi/vassals
+        state: directory
+
+    - name: create folder 
+      file:
+        name: /var/log/uwsgi
+        state: directory
+
+    - name: copy git uwsgi.ini
+      get_url:
+        url: 'https://raw.githubusercontent.com/DarelShroo/MiniProyectClass/master/uwsgi.ini'
+        dest: /var/www/shield/
+        force: yes
+
+    - name: create and change permissions shield.log
+      file:
+        name: /var/log/uwsgi/shield.log
+        state: touch
+        owner: www-data
+
+    - name: create symbolic link
+      file:
+        src: /var/www/shield/uwsgi.ini
+        dest: /etc/uwsgi/vassals/shield.ini
+        state: link
+        force: yes
+
+    - name: Clone emperor.ini
+      get_url:
+        url: 'https://raw.githubusercontent.com/DarelShroo/MiniProyectClass/master/emperor.ini'
+        dest: /etc/uwsgi/
+        force: yes
+
+    - name: Clone uwsgi-emperor.service
+      get_url:
+        url: 'https://raw.githubusercontent.com/DarelShroo/MiniProyectClass/master/uwsgi-emperor.service'
+        dest: /etc/systemd/system
+        force: yes
+
+    - name: reload daemon and started
+      systemd:
+        name: uwsgi-emperor
+        daemon_reload: yes
+        state: started
+
+    - name: remove nginx default
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state:  absent
+    
+    - name: Clone shield.conf
+      get_url:
+        url: 'https://raw.githubusercontent.com/DarelShroo/MiniProyectClass/master/shield.conf'
+        dest: /etc/nginx/sites-available/
+        force: yes
+    
+    - name: create symbolic link sites-enabled
+      file:
+        src: /etc/nginx/sites-available/shield.conf
+        dest: /etc/nginx/sites-enabled/shield.conf
+        state: link
+        force: yes
+    
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted
